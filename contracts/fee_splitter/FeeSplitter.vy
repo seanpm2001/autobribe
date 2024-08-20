@@ -99,6 +99,25 @@ def _set_receivers(receivers: DynArray[Receiver, MAX_RECEIVERS]):
 
     log SetReceivers()
 
+
+def is_excess_receiver(i: uint256) -> bool:
+    # the excess receiver is always the last one
+    return i == len(self.receivers) - 1
+
+def compute_weight(receiver: Receiver, current_excess: uint256) -> (uint256, uint256):
+    if not self._is_dynamic(receiver.addr):
+        return receiver.weight, current_excess
+
+    dynamic_weight: uint256 = staticcall DynamicWeight(receiver.addr).weight()
+
+    # weight acts as a cap to the dynamic weight
+    if dynamic_weight < receiver.weight:
+        return dynamic_weight, current_excess + receiver.weight - dynamic_weight
+
+    # if ended up here, the dynamic weight is greater or equal to the weight
+    return receiver.weight, current_excess
+
+
 @nonreentrant
 @external
 def dispatch_fees(controllers: DynArray[multiclaim.Controller, multiclaim.MAX_CONTROLLERS]=[]):
@@ -112,24 +131,19 @@ def dispatch_fees(controllers: DynArray[multiclaim.Controller, multiclaim.MAX_CO
 
     balance: uint256 = staticcall crvusd.balanceOf(self)
 
-    excess: uint256 = 0
+    total_excess: uint256 = 0
 
     # by iterating over the receivers, rather than the indices,
     # we avoid an oob check at every iteration.
     i: uint256 = 0
     for r: Receiver in self.receivers:
-        weight: uint256 = r.weight
+        weight: uint256 = 0
+        weight, total_excess = self.compute_weight(r, total_excess)
 
-        if self._is_dynamic(r.addr):
-            dynamic_weight: uint256 = staticcall DynamicWeight(r.addr).weight()
-
-            # weight acts as a cap to the dynamic weight
-            if dynamic_weight < weight:
-                excess += weight - dynamic_weight
-                weight = dynamic_weight
-
-        if i == len(self.receivers) - 1:
-            weight += excess
+        # if the receiver is the excess receiver,
+        # add the excess to the weight.
+        if self.is_excess_receiver(i):
+            weight += total_excess
 
         extcall crvusd.transfer(r.addr, balance * weight // MAX_BPS)
         i += 1
